@@ -1,0 +1,79 @@
+name: Setup Org Ruleset
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/secret-scan.yml'
+      - '.github/workflows/setup-org-ruleset.yml'
+
+jobs:
+  create-ruleset:
+    name: Create Org Ruleset
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Resolve policies repository ID
+        id: repo
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          REPO_ID=$(gh api /repos/${{ github.repository }} --jq '.id')
+          DEFAULT_BRANCH=$(gh api /repos/${{ github.repository }} --jq '.default_branch')
+          echo "id=$REPO_ID" >> "$GITHUB_OUTPUT"
+          echo "default_branch=$DEFAULT_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Check for existing ruleset
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          EXISTING=$(gh api /orgs/${{ github.repository_owner }}/rulesets --jq '[.[] | select(.name == "Require Secret Scan")] | length')
+          echo "count=$EXISTING" >> "$GITHUB_OUTPUT"
+
+      - name: Create org ruleset
+        if: steps.check.outputs.count == '0'
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          REPO_ID: ${{ steps.repo.outputs.id }}
+          DEFAULT_BRANCH: ${{ steps.repo.outputs.default_branch }}
+        run: |
+          gh api \
+            --method POST \
+            /orgs/${{ github.repository_owner }}/rulesets \
+            --input - <<EOF
+          {
+            "name": "Require Secret Scan",
+            "target": "branch",
+            "enforcement": "evaluate",
+            "conditions": {
+              "repository_name": { "include": ["~ALL"] },
+              "ref_name": {
+                "include": ["~DEFAULT_BRANCH"],
+                "exclude": []
+              }
+            },
+            "rules": [
+              {
+                "type": "workflows",
+                "parameters": {
+                  "workflows": [
+                    {
+                      "repository_id": $REPO_ID,
+                      "path": ".github/workflows/secret-scan.yml",
+                      "ref": "refs/heads/$DEFAULT_BRANCH"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+          EOF
+          echo "✅ Ruleset 'Require Secret Scan' created in evaluate mode."
+
+      - name: Report existing ruleset
+        if: steps.check.outputs.count != '0'
+        run: |
+          echo "ℹ️ Ruleset 'Require Secret Scan' already exists — skipping creation."
